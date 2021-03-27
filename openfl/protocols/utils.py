@@ -1,8 +1,13 @@
 # Copyright (C) 2020-2021 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-from openfl.utilities import TensorKey
+from openfl.protocols.federation_pb2 import TaskResults, TensorResponse
+from typing import Dict
+from google.protobuf.message import Message
 from openfl.protocols import ModelProto, NamedTensor, MetadataProto, DataStream
+from openfl.utilities import TensorKey
+from google.protobuf.json_format import MessageToDict, ParseDict
+import base64
 
 
 def model_proto_to_bytes_and_metadata(model_proto):
@@ -19,18 +24,15 @@ def model_proto_to_bytes_and_metadata(model_proto):
     bytes_dict = {}
     metadata_dict = {}
     round_number = None
-    for tensor_proto in model_proto.tensors:
-        bytes_dict[tensor_proto.name] = tensor_proto.data_bytes
-        metadata_dict[tensor_proto.name] = [{'int_to_float': proto.int_to_float,
-                                             'int_list': proto.int_list,
-                                             'bool_list': proto.bool_list} for proto in
-                                            tensor_proto.transformer_metadata]
+    for tensor_proto in model_proto['tensors']:
+        bytes_dict[tensor_proto['name']] = tensor_proto['data_bytes']
+        metadata_dict[tensor_proto['name']] = tensor_proto['transformer_metadata'].copy()
         if round_number is None:
-            round_number = tensor_proto.round_number
+            round_number = tensor_proto['round_number']
         else:
-            assert round_number == tensor_proto.round_number, (
+            assert round_number == tensor_proto['round_number'], (
                 'Round numbers in model are inconsistent: {} and {}'.format(
-                    round_number, tensor_proto.round_number))
+                    round_number, tensor_proto['round_number']))
     return bytes_dict, metadata_dict, round_number
 
 
@@ -60,10 +62,11 @@ def bytes_and_metadata_to_model_proto(bytes_dict, model_id, model_version, is_de
         tensor_protos.append(TensorProto(name=key,
                                          data_bytes=data_bytes,
                                          transformer_metadata=metadata_protos))
-    return ModelProto(header=model_header, tensors=tensor_protos)
+        model_proto = ModelProto(header=model_header, tensors=tensor_protos)
+        return model_proto_to_dict(model_proto)
 
 
-def construct_named_tensor(tensor_key, nparray, transformer_metadata, lossless):
+def construct_named_tensor(tensor_key, nparray, transformer_metadata, lossless, pure=False):
     metadata_protos = []
     for metadata in transformer_metadata:
         if metadata.get('int_to_float') is not None:
@@ -83,9 +86,11 @@ def construct_named_tensor(tensor_key, nparray, transformer_metadata, lossless):
         metadata_protos.append(MetadataProto(int_to_float=int_to_float, int_list=int_list, bool_list=bool_list))
 
     tensor_name, origin, round_number, report, tags = tensor_key
-
-    return NamedTensor(name=tensor_name, round_number=round_number, lossless=lossless, report=report, tags=tags,
+    named_tensor = NamedTensor(name=tensor_name, round_number=round_number, lossless=lossless, report=report, tags=tags,
                        transformer_metadata=metadata_protos, data_bytes=nparray)
+    if pure:
+        return named_tensor
+    return named_tensor_to_dict(named_tensor)
 
 
 def construct_proto(tensor_dict, model_id, model_version, is_delta, compression_pipeline):
@@ -112,9 +117,10 @@ def construct_model_proto(tensor_dict, round_number, tensor_pipe):
     for key, nparray in tensor_dict.items():
         bytes, transformer_metadata = tensor_pipe.forward(data=nparray)
         tensor_key = TensorKey(key, 'agg', round_number, False, ('model',))
-        named_tensors.append(construct_named_tensor(tensor_key, bytes, transformer_metadata, lossless=True))
+        named_tensor = construct_named_tensor(tensor_key, bytes, transformer_metadata, lossless=True, pure=True)
+        named_tensors.append(named_tensor)
 
-    return ModelProto(tensors=named_tensors)
+    return model_proto_to_dict(ModelProto(tensors=named_tensors))
 
 
 def deconstruct_model_proto(model_proto, compression_pipeline):
@@ -165,10 +171,11 @@ def load_proto(fpath):
     with open(fpath, "rb") as f:
         loaded = f.read()
         model = ModelProto().FromString(loaded)
+        model = model_proto_to_dict(model)
         return model
 
 
-def dump_proto(model_proto, fpath):
+def dump_proto(dataobj, fpath):
     """Dumps the protobuf to a file
 
     Args:
@@ -176,6 +183,8 @@ def dump_proto(model_proto, fpath):
         fpath: The filename to save the model protobuf
 
     """
+    model_proto = dict_to_model_proto(dataobj)
+
     s = model_proto.SerializeToString()
     with open(fpath, "wb") as f:
         f.write(s)
@@ -224,3 +233,57 @@ def proto_to_datastream(proto, logger, max_buffer_size=(2 * 1024 * 1024)):
         chunk = npbytes[i: i + buffer_size]
         reply = DataStream(npbytes=chunk, size=len(chunk))
         yield reply
+
+
+def model_proto_to_dict(model_proto: ModelProto) -> Dict:
+    dataobj = message_to_dict(model_proto)
+    dataobj['tensors'] = [named_tensor_to_dict(tensor) for tensor in model_proto.tensors]
+    return dataobj
+
+
+def dict_to_model_proto(dataobj: Dict) -> ModelProto:
+    model_proto = {
+        **dataobj,
+        'tensors': [
+            {
+                **tensor,
+                'data_bytes': base64.b64encode(tensor['data_bytes']).decode('utf-8')
+            } for tensor in dataobj['tensors']]
+    }
+
+    return ParseDict(model_proto, ModelProto())
+
+
+def named_tensor_to_dict(named_tensor: NamedTensor) -> Dict:
+    dataobj = message_to_dict(named_tensor)
+    dataobj['data_bytes'] = base64.b64decode(dataobj['data_bytes'].encode())
+
+    return dataobj
+
+
+def dict_to_named_tensor(dict: Dict) -> NamedTensor:
+    named_tensor = {
+        **dict,
+        'data_bytes': base64.b64encode(dict['data_bytes']).decode('utf-8')
+    }
+
+    return ParseDict(named_tensor, NamedTensor())
+
+def message_to_dict(message: Message) -> Dict:
+    return MessageToDict(message,
+                         preserving_proto_field_name=True,
+                         including_default_value_fields=True)
+
+
+def tensor_response_to_dict(tensor_response: TensorResponse) -> Dict:
+    dataobj = message_to_dict(tensor_response)
+    dataobj['tensor'] = named_tensor_to_dict(tensor_response.tensor)
+
+    return dataobj
+
+
+def task_results_to_dict(task_results: TaskResults) -> Dict:
+    dataobj = message_to_dict(task_results)
+    dataobj['tensors'] = [named_tensor_to_dict(tensor) for tensor in task_results.tensors]
+
+    return dataobj

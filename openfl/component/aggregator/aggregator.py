@@ -10,7 +10,6 @@ from openfl.pipelines import NoCompressionPipeline, TensorCodec
 from openfl.databases import TensorDB
 
 from openfl.protocols import utils
-from openfl.protocols import ModelProto
 
 
 class Aggregator:
@@ -82,7 +81,7 @@ class Aggregator:
         self.last_tensor_dict: dict = {}
 
         self.best_model_score = None
-        self.model: ModelProto = utils.load_proto(self.init_state_path)
+        self.model = utils.load_proto(self.init_state_path)
 
         self._load_initial_tensors()  # keys are TensorKeys
 
@@ -421,7 +420,7 @@ class Aggregator:
             task_name: str
             round_number: int
             data_size: int
-            named_tensors: protobuf NamedTensor
+            named_tensors: NamedTensor dict
         Returns:
              None
         """
@@ -453,7 +452,7 @@ class Aggregator:
         # task dictionary
         for named_tensor in named_tensors:
             # sanity check that this tensor has been updated
-            if named_tensor.round_number != round_number:
+            if named_tensor['round_number'] != round_number:
                 raise ValueError(
                     'Collaborator {} is reporting results for the wrong round.'
                     ' Exiting...'.format(collaborator_name)
@@ -495,19 +494,16 @@ class Aggregator:
             nparray : np.array
                 The numpy array associated with the returned tensorkey
         """
-        raw_bytes = named_tensor.data_bytes
-        metadata = [{'int_to_float': proto.int_to_float,
-                     'int_list': proto.int_list,
-                     'bool_list': proto.bool_list}
-                    for proto in named_tensor.transformer_metadata]
+        raw_bytes = named_tensor['data_bytes']
+        metadata = named_tensor['transformer_metadata']
         # The tensor has already been transfered to aggregator,
         # so the newly constructed tensor should have the aggregator origin
         tensor_key = TensorKey(
-            named_tensor.name,
+            named_tensor['name'],
             self.uuid,
-            named_tensor.round_number,
-            named_tensor.report,
-            tuple(named_tensor.tags)
+            named_tensor['round_number'],
+            named_tensor['report'],
+            tuple(named_tensor['tags'])
         )
         tensor_name, origin, round_number, report, tags = tensor_key
         assert ('compressed' in tags or 'lossy_decompressed' in tags), (
@@ -826,6 +822,9 @@ class Aggregator:
             "SHOULD ONLY BE USED IN DEVELOPMENT SETTINGS!!!! YE HAVE BEEN"
             " WARNED!!!".format(
                 the_dragon))
+    
+    def get_last_tensor_dict(self):
+        return self.last_tensor_dict
 
 
 the_dragon = """
