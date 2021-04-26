@@ -20,6 +20,7 @@ The high-level workflow is shown in the figure above. Note that once OpenFL is i
 
    running_the_federation.notebook
    running_the_federation.baremetal
+   running_the_federation.saveandload
    running_the_federation.docker
    running_the_federation.certificates
    running_the_federation.start_nodes.rst
