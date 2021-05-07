@@ -4,6 +4,7 @@
 """FederatedModel module."""
 
 import inspect
+
 from .runner import TaskRunner
 
 
@@ -24,7 +25,7 @@ class FederatedModel(TaskRunner):
         loss_fn : pytorch loss_fun (only required for pytorch)
     """
 
-    def __init__(self, build_model, optimizer=None, loss_fn=None, **kwargs):
+    def __init__(self, build_model, optimizer=None, loss_fn=None, device=None, **kwargs):
         """Initialize.
 
         Args:
@@ -33,39 +34,78 @@ class FederatedModel(TaskRunner):
 
         """
         super().__init__(**kwargs)
-
         self.build_model = build_model
-        self.lambda_opt = None
-        # TODO pass params to model
-        if inspect.isclass(build_model):
-            self.model = build_model()
-            from .runner_pt import PyTorchTaskRunner
-            if optimizer is not None:
-                self.optimizer = optimizer(self.model.parameters())
-            # build_model.__init__()
-            self.runner = PyTorchTaskRunner(**kwargs)
-            if hasattr(self.model, 'forward'):
-                self.runner.forward = self.model.forward
-        else:
-            self.model = self.build_model(
-                self.feature_shape, self.data_loader.num_classes)
-            from .runner_keras import KerasTaskRunner
-            self.runner = KerasTaskRunner(**kwargs)
-            self.optimizer = self.model.optimizer
-        self.lambda_opt = optimizer
-        if hasattr(self.model, 'validate'):
-            self.runner.validate = lambda *args, **kwargs: build_model.validate(
-                self.runner, *args, **kwargs)
-        if hasattr(self.model, 'train_epoch'):
-            self.runner.train_epoch = lambda *args, **kwargs: build_model.train_epoch(
-                self.runner, *args, **kwargs)
-        self.runner.model = self.model
-        self.runner.optimizer = self.optimizer
+        self.device = device
         self.loss_fn = loss_fn
-        self.runner.loss_fn = self.loss_fn
-        self.tensor_dict_split_fn_kwargs = \
-            self.runner.tensor_dict_split_fn_kwargs
-        self.initialize_tensorkeys_for_functions()
+        self.lambda_opt = optimizer
+        self.__kwargs = kwargs
+        self.__model = None
+        self.__optimizer = None
+        self.__runner = None
+
+    @property
+    def model(self):
+        """
+        Model lazy property.
+
+        If self.__model exists, return self.__model
+        If self.__model does not exist, build model based on build_model param
+        """
+        # TODO pass params to model
+        if not self.__model:
+            if inspect.isclass(self.build_model):
+                self.__model = self.build_model()
+            else:
+                self.__model = self.build_model(self.feature_shape, self.data_loader.num_classes)
+        return self.__model
+
+    @property
+    def optimizer(self):
+        """
+        Optimizer lazy property.
+
+        If self.__optimizer exists, return self.__optimizer
+        If self.__optimizer does not exist, create optimizer based on build_model param
+        """
+        if not self.__optimizer:
+            if inspect.isclass(self.build_model):
+                if self.lambda_opt is not None:
+                    self.__optimizer = self.lambda_opt(self.model.parameters())
+            else:
+                self.__optimizer = self.model.optimizer
+        return self.__optimizer
+
+    @property
+    def runner(self):
+        """
+        Runner lazy property.
+
+        If self.__runner exists, return self.__runner
+        If self.__runner does not exist, create TaskRunner based on build_model param
+        """
+        if not self.__runner:
+            if inspect.isclass(self.build_model):
+                from .runner_pt import PyTorchTaskRunner
+                if self.device:
+                    self.__kwargs.update({'device': self.device})
+                self.__runner = PyTorchTaskRunner(**self.__kwargs)
+                if hasattr(self.model, 'forward'):
+                    self.__runner.forward = self.model.forward
+            else:
+                from .runner_keras import KerasTaskRunner
+                self.__runner = KerasTaskRunner(**self.__kwargs)
+            if hasattr(self.model, 'validate'):
+                self.__runner.validate = lambda *args, **kwargs: self.build_model.validate(
+                    self.__runner, *args, **kwargs)
+            if hasattr(self.model, 'train_epoch'):
+                self.runner.train_epoch = lambda *args, **kwargs: self.build_model.train_epoch(
+                    self.runner, *args, **kwargs)
+            self.__runner.loss_fn = self.loss_fn
+            self.__runner.model = self.model
+            self.__runner.optimizer = self.optimizer
+            self.tensor_dict_split_fn_kwargs = self.__runner.tensor_dict_split_fn_kwargs
+            self.initialize_tensorkeys_for_functions()
+        return self.__runner
 
     def __getattribute__(self, attr):
         """Direct call into self.runner methods if necessary."""
@@ -79,7 +119,7 @@ class FederatedModel(TaskRunner):
             return self.runner.__getattribute__(attr)
         return super(FederatedModel, self).__getattribute__(attr)
 
-    def setup(self, num_collaborators, **kwargs):
+    def setup(self, num_collaborators, shuffle=True, equally=True, **kwargs):
         """
         Create new models for all of the collaborators in the experiment.
 
@@ -94,9 +134,10 @@ class FederatedModel(TaskRunner):
                 self.build_model,
                 optimizer=self.lambda_opt,
                 loss_fn=self.loss_fn,
+                device=self.device,
                 data_loader=data_slice,
                 **kwargs
             )
             for data_slice in self.data_loader.split(
-                num_collaborators, equally=True
+                num_collaborators, shuffle=shuffle, equally=equally
             )]

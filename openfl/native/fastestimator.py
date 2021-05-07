@@ -3,14 +3,15 @@
 """FederatedFastEstimator module."""
 
 import os
-from pathlib import Path
 from logging import getLogger
-from openfl.federated import Plan
-from openfl.protocols import utils
-from openfl.utilities import split_tensor_dict_for_holdouts
+from pathlib import Path
+
 import openfl.native as fx
+from openfl.federated import Plan
 from openfl.federated.data import FastEstimatorDataLoader
 from openfl.federated.task import FastEstimatorTaskRunner
+from openfl.protocols import utils
+from openfl.utilities import split_tensor_dict_for_holdouts
 
 
 class FederatedFastEstimator:
@@ -68,7 +69,7 @@ class FederatedFastEstimator:
         self.logger.info(f'Creating Initial Weights File'
                          f'    🠆 {init_state_path}')
 
-        utils.dump_proto(model_proto=model_snap, fpath=init_state_path)
+        utils.dump_proto(dataobj=model_snap, fpath=init_state_path)
 
         self.logger.info('Starting Experiment...')
 

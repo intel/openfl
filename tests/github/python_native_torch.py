@@ -4,9 +4,15 @@
 """Python native tests."""
 
 import numpy as np
-import json
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torchvision import datasets, transforms
 
 import openfl.native as fx
+from openfl.federated import FederatedModel, FederatedDataSet
+from openfl.interface.cli import setup_logging
 
 
 def one_hot(labels, classes):
@@ -14,83 +20,104 @@ def one_hot(labels, classes):
     return np.eye(classes)[labels]
 
 
-fx.init('torch_cnn_mnist')
+def cross_entropy(output, target):
+    """Binary cross-entropy metric."""
+    return F.cross_entropy(input=output, target=target)
+
+
+def get_optimizer(x):
+    """Optimizer function."""
+    return optim.Adam(x, lr=1e-4)
+
+
+class Net(nn.Module):
+    """PyTorch Neural Network."""
+
+    def __init__(self):
+        """Initialize."""
+        super(Net, self).__init__()
+        self.conv1 = nn.Conv2d(1, 16, 3)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.conv2 = nn.Conv2d(16, 32, 3)
+        self.fc1 = nn.Linear(32 * 5 * 5, 32)
+        self.fc2 = nn.Linear(32, 84)
+        self.fc3 = nn.Linear(84, 10)
+
+    def forward(self, x):
+        """Forward pass of the network."""
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = x.view(x.size(0), -1)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+
+def _parse_args():
+    import argparse
+    parser = argparse.ArgumentParser(description='Test FX native API with Torch')
+    parser.add_argument('--batch_size', metavar='B', type=int, nargs='?', help='batch_size',
+                        default=32)
+    parser.add_argument('--dataset_multiplier', metavar='M', type=int, nargs='?',
+                        help='dataset_multiplier', default=1)
+    parser.add_argument('--rounds_to_train', metavar='R', type=int, nargs='?',
+                        help='rounds_to_train', default=5)
+    parser.add_argument('--collaborators_amount', metavar='C', type=int, nargs='?',
+                        help='collaborators_amount', default=2)
+    parser.add_argument('--is_multi', const=True, nargs='?',
+                        help='is_multi', default=False)
+    parser.add_argument('--max_workers', metavar='W', type=int, nargs='?',
+                        help='max_workers', default=0)
+    parser.add_argument('--mode', metavar='W', type=str, nargs='?',
+                        help='mode', default='p=c*r')
+    parsed_args = parser.parse_args()
+    print(parsed_args)
+    return parsed_args
+
+
+setup_logging()
 
 if __name__ == '__main__':
-    import torch
-    import torch.nn as nn
-    import torch.nn.functional as F
-    import torch.optim as optim
-    from torchvision import datasets, transforms
+    args = _parse_args()
+    fx.init('torch_cnn_mnist')
 
-    from openfl.federated import FederatedModel, FederatedDataSet
-
-    def cross_entropy(output, target):
-        """Binary cross-entropy metric."""
-        return F.cross_entropy(input=output, target=target)
-
-    class Net(nn.Module):
-        """PyTorch Neural Network."""
-
-        def __init__(self):
-            """Initialize."""
-            super(Net, self).__init__()
-            self.conv1 = nn.Conv2d(1, 16, 3)
-            self.pool = nn.MaxPool2d(2, 2)
-            self.conv2 = nn.Conv2d(16, 32, 3)
-            self.fc1 = nn.Linear(32 * 5 * 5, 32)
-            self.fc2 = nn.Linear(32, 84)
-            self.fc3 = nn.Linear(84, 10)
-
-        def forward(self, x):
-            """Forward pass of the network."""
-            x = self.pool(F.relu(self.conv1(x)))
-            x = self.pool(F.relu(self.conv2(x)))
-            x = x.view(x.size(0), -1)
-            x = F.relu(self.fc1(x))
-            x = F.relu(self.fc2(x))
-            x = self.fc3(x)
-            return x
-
-    transform = transforms.Compose([transforms.ToTensor(),
-                                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-
-    trainset = datasets.MNIST(root='./data', train=True,
-                              download=True, transform=transform)
-
-    train_images, train_labels = trainset.train_data, np.array(trainset.train_labels)
-    train_images = torch.from_numpy(np.expand_dims(train_images, axis=1)).float()
-
-    validset = datasets.MNIST(root='./data', train=False,
-                              download=True, transform=transform)
-
-    valid_images, valid_labels = validset.test_data, np.array(validset.test_labels)
-    valid_images = torch.from_numpy(np.expand_dims(valid_images, axis=1)).float()
-    valid_labels = one_hot(valid_labels, 10)
-    feature_shape = train_images.shape[1]
     classes = 10
+    transform = transforms.Compose([transforms.ToTensor(),
+                                    transforms.Normalize((0.5), (0.5))])
+
+    trainset = datasets.MNIST(root='./data',
+                              train=True,
+                              download=True,
+                              transform=transform)
+
+    validset = datasets.MNIST(root='./data',
+                              train=False,
+                              download=True,
+                              transform=transform,
+                              target_transform=lambda labels: one_hot(labels, classes))
+
+    (train_images, train_labels), (valid_images, valid_labels) = (zip(*dataset) for dataset in
+                                                                  [trainset, validset])
+    train_images, valid_images = (torch.stack(images).numpy() for images in
+                                  [train_images, valid_images])
+    train_labels, valid_labels = (np.stack(labels) for labels in [train_labels, valid_labels])
+    feature_shape = train_images.shape[1]
+    train_images = np.concatenate([train_images for _ in range(args.dataset_multiplier)])
+    train_labels = np.concatenate([train_labels for _ in range(args.dataset_multiplier)])
 
     fl_data = FederatedDataSet(train_images, train_labels, valid_images, valid_labels,
-                               batch_size=32, num_classes=classes)
-    fl_model = FederatedModel(build_model=Net, optimizer=lambda x: optim.Adam(x, lr=1e-4),
+                               batch_size=args.batch_size, num_classes=classes)
+    fl_model = FederatedModel(build_model=Net, optimizer=get_optimizer,
                               loss_fn=cross_entropy, data_loader=fl_data)
-    collaborator_models = fl_model.setup(num_collaborators=2)
-    collaborators = {'one': collaborator_models[0], 'two': collaborator_models[1]}
+    collaborator_models = fl_model.setup(num_collaborators=args.collaborators_amount)
+    collaborators = {str(i): c for i, c in enumerate(collaborator_models)}
+
     print(f'Original training data size: {len(train_images)}')
     print(f'Original validation data size: {len(valid_images)}\n')
 
-    # Collaborator one's data
-    print(f'Collaborator one\'s training data size: \
-            {len(collaborator_models[0].data_loader.X_train)}')
-    print(f'Collaborator one\'s validation data size: \
-            {len(collaborator_models[0].data_loader.X_valid)}\n')
-
-    # Collaborator two's data
-    print(f'Collaborator two\'s training data size: \
-            {len(collaborator_models[1].data_loader.X_train)}')
-    print(f'Collaborator two\'s validation data size: \
-            {len(collaborator_models[1].data_loader.X_valid)}\n')
-
-    print(json.dumps(fx.get_plan(), indent=4, sort_keys=True))
-    final_fl_model = fx.run_experiment(collaborators, {'aggregator.settings.rounds_to_train': 5})
+    final_fl_model = fx.run_experiment(collaborators, {
+        'aggregator.settings.rounds_to_train': args.rounds_to_train,
+    }, is_multi=args.is_multi, max_workers=args.max_workers, mode=args.mode)
     final_fl_model.save_native('final_pytorch_model')
+    print('FINISH')

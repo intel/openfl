@@ -15,9 +15,7 @@ with catch_warnings():
 
 import numpy as np
 
-
 from openfl.utilities import TensorKey, split_tensor_dict_for_holdouts, Metric
-
 from .runner import TaskRunner
 
 
@@ -59,7 +57,8 @@ class KerasTaskRunner(TaskRunner):
         else:
             self.set_tensor_dict(input_tensor_dict, with_opt_vars=False)
 
-    def train(self, col_name, round_num, input_tensor_dict, metrics, num_batches=None, **kwargs):
+    def train(self, col_name, round_num, input_tensor_dict, metrics, epochs,
+              num_batches=None, **kwargs):
         """
         Perform the training for a specified number of batches.
 
@@ -83,6 +82,7 @@ class KerasTaskRunner(TaskRunner):
 
         results = self.train_iteration(self.data_loader.get_train_loader(num_batches),
                                        metrics=metrics,
+                                       epochs=epochs,
                                        **kwargs)
 
         # output metric tensors (scalar)
@@ -156,7 +156,6 @@ class KerasTaskRunner(TaskRunner):
                 Each batch is a tuple of N train images and N train labels
                 where N is the batch size of the DataLoader of the current TaskRunner instance.
 
-            epochs: Number of epochs to train.
             metrics: Names of metrics to save.
         """
         # TODO Currently assuming that all metrics are defined at
@@ -497,7 +496,7 @@ class KerasTaskRunner(TaskRunner):
             validation_local_model_dict = local_model_dict
         else:
             output_model_dict = self.get_tensor_dict(with_opt_vars=False)
-            validation_global_model_dict, validation_local_model_dict =\
+            validation_global_model_dict, validation_local_model_dict = \
                 split_tensor_dict_for_holdouts(
                     self.logger,
                     output_model_dict,
@@ -519,11 +518,13 @@ class KerasTaskRunner(TaskRunner):
         # so there is an extra lookup dimension for kwargs
         self.required_tensorkeys_for_function['validate'] = {}
         # TODO This is not stateless. The optimizer will not be
-        self.required_tensorkeys_for_function['validate']['apply=local'] = \
-            [TensorKey(tensor_name, 'LOCAL', 0, False, ('trained',))
-             for tensor_name in {
-                 **validation_global_model_dict,
-                 **validation_local_model_dict}]
+        self.required_tensorkeys_for_function['validate']['apply=local'] = [
+            TensorKey(tensor_name, 'LOCAL', 0, False, ('trained',))
+            for tensor_name in {
+                **validation_global_model_dict,
+                **validation_local_model_dict
+            }
+        ]
         self.required_tensorkeys_for_function['validate']['apply=global'] = \
             [TensorKey(tensor_name, 'GLOBAL', 0, False, ('model',))
              for tensor_name in validation_global_model_dict]
